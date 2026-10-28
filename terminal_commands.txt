@@ -1,0 +1,22 @@
+========== terminal 1 - public callback url command ==========================================================
+
+    // create a webhook url using ngrok token
+    ngrok config add-authtoken 3KsWvYnqIdQthpKc9OxHZUV36ir_2oRZcHVHkKxCmGf1oriPv
+
+    // get online created webhook
+    ngrok http 3001 --url https://tipper-granny-referable.ngrok-free.dev
+
+
+========== terminal 2 - run server command ==========================================================
+    node index.js
+
+
+========== special notes ==========================================================
+
+    // my webhook url to configure each platform
+    https://tipper-granny-referable.ngrok-free.dev/webhook
+
+    // viber specific
+    curl -X POST https://tipper-granny-referable.ngrok-free.dev/webhook -H "Content-Type: application/json" -d "{\"results\":[{\"integrationType\":\"VIBER\",\"from\":\"94714563856\",\"message\":{\"type\":\"TEXT\",\"text\":\"Triggered via curl!\"}}]}"
+
+    https://curvy-sites-melt.loca.lt

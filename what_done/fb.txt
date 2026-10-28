@@ -1,0 +1,71 @@
+# Facebook Messenger Bot: Setup & Credentials Documentation
+
+Copy this template into your secure notes or password manager and replace the bracketed placeholders with your actual live keys.
+
+## 1. Core Credentials
+
+* **Meta App ID:** `[Insert from Meta App Dashboard]`
+* **Facebook Page ID:** `1416740384848221` *(Extracted from webhook payload)*
+* **Webhook Verify Token:** `my VERIFY_TOKEN` *(Used in your Express `req.query['hub.verify_token']` logic)*
+* **Page Access Token:** `[Insert your permanent Page Access Token here]`
+
+## 2. Meta Dashboard Configuration
+
+**Location:** [developers.facebook.com/apps](https://developers.facebook.com/apps) -> **Messenger** -> **Messenger API Settings**
+
+* **Webhook URL:** `https://[your-domain-or-ngrok]/webhook`
+* **Webhook Subscriptions:** You must be subscribed to the **`messages`** field under the Webhooks section for the connected Page.
+* **Token Generation Method:** Generated directly via the **Access Tokens** section by clicking "Generate Token" next to the specific Facebook Page.
+* **Required Permissions:**
+* `pages_messaging`
+* `pages_show_list`
+* `pages_manage_metadata`
+
+
+
+## 3. Webhook Parsing Logic (Node.js)
+
+Incoming Facebook Messenger webhooks are identified by `body.object === 'page'`. The script dynamically extracts the `bot_id` (the Page ID) and the `sender_psid` (the user's ID).
+
+```javascript
+if (body.object === 'page') {
+    res.status(200).send('EVENT_RECEIVED'); 
+
+    body.entry.forEach(function(entry) {
+        if (entry.messaging) {
+            let webhook_event = entry.messaging[0];
+            let sender_psid = webhook_event.sender.id;
+            let bot_id = webhook_event.recipient.id; // Extracts the exact FB Page ID
+            
+            if (webhook_event.message && webhook_event.message.is_echo) return;
+
+            if (webhook_event.message && webhook_event.message.text) {
+                sendFbIgReply(sender_psid, bot_id, `Received: "${webhook_event.message.text}"`);
+            }
+        }
+    });
+}
+
+```
+
+## 4. Outbound Reply Function
+
+To avoid the `"Object with ID 'me' does not exist"` error, the API call injects the dynamic `bot_id` into the URL path and passes the Page Access Token via a Bearer authorization header.
+
+```javascript
+function sendFbIgReply(sender_psid, bot_id, responseText) {
+    axios.post(`https://graph.facebook.com/v20.0/${bot_id}/messages`, {
+        "recipient": { "id": sender_psid },
+        "messaging_type": "RESPONSE",
+        "message": { "text": responseText }
+    }, {
+        headers: { "Authorization": `Bearer ${PAGE_ACCESS_TOKEN}` } 
+    }).catch(err => console.error('FB Error:', err.response ? err.response.data : err.message));
+}
+
+```
+
+## 5. Critical Architectural Notes
+
+* **Avoid System User Tokens for Messenger:** Generating a master token via a System User breaks the routing for Facebook/Instagram replies. You **must** use a pure Page Access Token generated directly from the App Dashboard to successfully authorize outbound replies.
+* **Dynamic ID Routing:** Never hardcode `/me/messages` in the Graph API URL for a multi-channel bot. Always pass `${bot_id}`.

@@ -1,0 +1,81 @@
+# Instagram Bot: Setup & Credentials Documentation
+
+Copy this template into your secure notes alongside your Facebook configuration.
+
+## 1. Core Credentials
+
+* **Meta App ID:** `993611856351763` *(Siyoth - IG)*
+* **Instagram Account ID:** `17841477389394470` *(Extracted from webhook payload for `oraveen`)*
+* **Webhook Verify Token:** `my VERIFY_TOKEN` *(Same as Facebook)*
+* **Access Token:** `[Insert your permanent Page Access Token here]` *(Instagram shares the exact same Page Access Token as Facebook, provided the token includes IG permissions)*
+
+## 2. Meta Dashboard & Mobile App Configuration
+
+Instagram requires strict permissions on both the Meta developer backend AND the physical mobile app. Missing either will silently kill the webhook.
+
+**Step A: The Mobile App (Crucial)**
+
+* Log into the target Instagram account (`oraveen`) on a phone.
+* Go to **Settings and privacy** -> **Message controls** (or "Messages and story replies").
+* Scroll to **Connected tools** and toggle **Allow access to messages** to **ON**.
+
+**Step B: The Meta Dashboard**
+
+* Location: [developers.facebook.com/apps](https://developers.facebook.com/apps) -> **Messenger** -> **Messenger API Settings**
+* **Linked Accounts:** Ensure the Instagram account is officially linked to your Facebook Page inside Facebook Page Settings.
+* **Required Permissions:** When generating the Page Access Token, the pop-up must have both the FB Page and the IG account checked, granting:
+* `instagram_manage_messages`
+* `instagram_basic`
+* `pages_messaging`
+* `pages_show_list`
+* `pages_manage_metadata`
+
+
+
+## 3. Webhook Parsing Logic (Node.js)
+
+Incoming Instagram webhooks are identified by `body.object === 'instagram'`. The payload structure is identical to Facebook Messenger, so they share the exact same processing loop.
+
+```javascript
+if (body.object === 'instagram' || body.object === 'page') {
+    res.status(200).send('EVENT_RECEIVED'); 
+
+    body.entry.forEach(function(entry) {
+        if (entry.messaging) {
+            let webhook_event = entry.messaging[0];
+            let sender_psid = webhook_event.sender.id;
+            let bot_id = webhook_event.recipient.id; // Extracts the exact IG ID (17841477389394470)
+            
+            // Ignores echo messages to prevent infinite bot reply loops
+            if (webhook_event.message && webhook_event.message.is_echo) return;
+
+            if (webhook_event.message && webhook_event.message.text) {
+                sendFbIgReply(sender_psid, bot_id, `Received on ${body.object}: "${webhook_event.message.text}"`);
+            }
+        }
+    });
+}
+
+```
+
+## 4. Outbound Reply Function
+
+Instagram utilizes the exact same Graph API endpoint and helper function as Facebook. The dynamic `bot_id` routing ensures Meta knows the reply is coming from the Instagram asset.
+
+```javascript
+function sendFbIgReply(sender_psid, bot_id, responseText) {
+    axios.post(`https://graph.facebook.com/v20.0/${bot_id}/messages`, {
+        "recipient": { "id": sender_psid },
+        "messaging_type": "RESPONSE",
+        "message": { "text": responseText }
+    }, {
+        headers: { "Authorization": `Bearer ${PAGE_ACCESS_TOKEN}` } 
+    }).catch(err => console.error('IG Error:', err.response ? err.response.data : err.message));
+}
+
+```
+
+## 5. Critical Architectural Notes
+
+* **Development Mode Tester Invites:** While the app is in Development Mode, *any* account sending a DM to the bot (e.g., `amalperera`) must be added to the Meta App Roles as an **Instagram Tester**. They must physically log into `developers.facebook.com` and accept the invite before their messages will trigger the webhook.
+* **Shared Infrastructure:** Because Facebook and Instagram share the `bot_id` URL injection and Bearer token headers, keeping them merged in the `if (body.object === 'page' || body.object === 'instagram')` block is the cleanest architecture.

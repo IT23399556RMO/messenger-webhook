@@ -1,0 +1,68 @@
+# Viber Bot: Setup & Credentials Documentation
+
+Copy this final template into your secure notes to complete your multi-channel bot documentation.
+
+## 1. Core Credentials
+
+* **Viber Auth Token:** `[Insert your permanent Viber Token here]` *(Obtained from your official API broker like Twilio/Infobip, or directly from the Viber Business dashboard if you hold a direct corporate contract).*
+* **Webhook URL:** `https://[your-domain-or-ngrok]/webhook`
+
+## 2. Platform Configuration (The Setup Difference)
+
+Unlike Meta platforms which use a developer dashboard UI to configure webhooks, Viber strictly requires you to register your webhook URL by making a one-time HTTP POST request directly to their API.
+
+**To register or update your webhook endpoint:**
+Make a one-time API call (using Postman, cURL, or a temporary script) to `[https://chatapi.viber.com/pa/set_webhook](https://chatapi.viber.com/pa/set_webhook)` with your token in the header and this JSON body:
+
+```json
+{
+   "url": "https://[your-domain-or-ngrok]/webhook",
+   "event_types": ["delivered", "seen", "failed", "subscribed", "unsubscribed", "conversation_started"]
+}
+
+```
+
+*Note: Viber will instantly send a test request to your server. Your Node.js server must be running and reply with HTTP 200 OK to successfully bind the webhook.*
+
+## 3. Webhook Parsing Logic (Node.js)
+
+Incoming Viber webhooks lack an `object` parameter and are instead identified by the presence of `body.event`.
+
+```javascript
+if (body.event) {
+    res.status(200).send('EVENT_RECEIVED'); // Viber strictly requires immediate 200 OK
+    
+    // Process text messages
+    if (body.event === 'message' && body.message.type === 'text') {
+        let sender_id = body.sender.id; // Viber's unique user ID format
+        console.log(`New message received from viber:`, body.message.text);
+        
+        sendViberReply(sender_id, `Received on Viber: "${body.message.text}"`);
+    }
+}
+
+```
+
+## 4. Outbound Reply Function
+
+Viber uses its own dedicated chat API endpoint. The authentication token is passed securely in a custom header called `X-Viber-Auth-Token`, and every outbound message must declare a `sender.name`.
+
+```javascript
+function sendViberReply(sender_id, responseText) {
+    axios.post(`https://chatapi.viber.com/pa/send_message`, {
+        "receiver": sender_id,
+        "type": "text",
+        "text": responseText,
+        "sender": { "name": "Company Bot" } // Required by Viber API
+    }, {
+        headers: { "X-Viber-Auth-Token": VIBER_TOKEN }
+    }).catch(err => console.error('Viber Error:', err.response ? err.response.data : err.message));
+}
+
+```
+
+## 5. Critical Architectural Notes
+
+* **Commercial Account Requirement:** As of 2024, Viber's free chatbot tier is deprecated. This code will only execute successfully if your `VIBER_TOKEN` belongs to an approved Commercial Viber Business Account.
+* **Speed is Mandatory:** Viber's backend is highly aggressive with timeouts. If your `res.status(200).send()` is delayed by long-running operations (like heavy database queries or AI generation) before acknowledging the webhook, Viber will assume the webhook failed and stop sending you messages.
+* **User IDs:** A Viber `sender_id` is a 24-character alphanumeric string. It is unique to your bot and is *not* the user's actual phone number for privacy reasons.
