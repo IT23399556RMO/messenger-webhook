@@ -1,146 +1,162 @@
 require('dotenv').config();
 const express = require('express');
-const bodyParser = require('body-parser');
 const axios = require('axios');
+const bodyParser = require('body-parser');
 
 const app = express();
-const messageLogs = []; // Stores live traffic in memory
 app.use(bodyParser.json());
+app.use(express.static('public')); // Serves the dashboard UI
 
-// 1. TOKENS & CREDENTIALS
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN; 
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; 
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN; 
-const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID; 
-const VIBER_TOKEN = process.env.VIBER_TOKEN; 
-const INFOBIP_BASE_URL = process.env.INFOBIP_BASE_URL; 
+// --- CREDENTIALS ---
+const LLM_KB = process.env.KB;
+const LLM_ACCESS_TOKEN = process.env.ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
+const VIBER_TOKEN = process.env.VIBER_TOKEN;
+const INFOBIP_BASE_URL = process.env.INFOBIP_BASE_URL;
 
-const LLM_KB = process.env.KB; 
-const LLM_ACCESS_TOKEN = process.env.ACCESS_TOKEN; 
+// Memory storage for the dashboard
+let chatLogs = []; 
 
-// 2. WEBHOOK VERIFICATION (GET)
+// ==========================================
+// DASHBOARD API ENDPOINTS
+// ==========================================
+app.get('/api/logs', (req, res) => res.json(chatLogs));
+app.post('/api/logs/clear', (req, res) => {
+    chatLogs = [];
+    res.sendStatus(200);
+});
+
+// ==========================================
+// THE LLM "CHEF" INTEGRATION
+// ==========================================
+async function askCompanyLLM(user_message) {
+    try {
+        const url = `https://whatsappai.siyothsoft.com/echo-secure?kb=${encodeURIComponent(LLM_KB)}&message=${encodeURIComponent(user_message)}`;
+        const response = await axios.get(url, {
+            headers: { "Authorization": `Bearer ${LLM_ACCESS_TOKEN}` }
+        });
+        return String(response.data).replace(/^data:\s*/i, ''); 
+    } catch (error) {
+        console.error('LLM API Error:', error.message);
+        return "I'm having trouble connecting to the knowledge base."; 
+    }
+}
+
+// ==========================================
+// OUTBOUND MESSAGE DELIVERIES
+// ==========================================
+async function sendFbIgReply(sender_psid, bot_id, text, platform) {
+    chatLogs.push({ userId: sender_psid, platform: platform, type: 'sent', message: text, time: new Date().toLocaleTimeString() });
+    try {
+        await axios.post(`https://graph.facebook.com/v20.0/${bot_id}/messages`, {
+            recipient: { id: sender_psid },
+            messaging_type: "RESPONSE",
+            message: { text: text }
+        }, { headers: { "Authorization": `Bearer ${PAGE_ACCESS_TOKEN}` } });
+    } catch (err) { console.error(`${platform} Error:`, err.message); }
+}
+
+async function sendWhatsAppReply(sender_phone, text) {
+    chatLogs.push({ userId: sender_phone, platform: 'WhatsApp', type: 'sent', message: text, time: new Date().toLocaleTimeString() });
+    try {
+        await axios.post(`https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_ID}/messages`, {
+            messaging_product: "whatsapp",
+            to: sender_phone,
+            type: "text",
+            text: { body: text }
+        }, { headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}` } });
+    } catch (err) { console.error('WhatsApp Error:', err.message); }
+}
+
+async function sendViberReply(sender_phone, text) {
+    chatLogs.push({ userId: sender_phone, platform: 'Viber', type: 'sent', message: text, time: new Date().toLocaleTimeString() });
+    try {
+        await axios.post(`https://${INFOBIP_BASE_URL}/viber/2/messages`, {
+            messages: [{
+                sender: "IBSelfServe", 
+                destinations: [{ to: sender_phone }],
+                content: { type: "TEXT", text: text }
+            }]
+        }, {
+            headers: { "Authorization": `App ${VIBER_TOKEN}`, "Content-Type": "application/json", "Accept": "application/json" }
+        });
+    } catch (err) { console.error('Viber Error:', err.message); }
+}
+
+// ==========================================
+// INBOUND WEBHOOK ROUTER
+// ==========================================
 app.get('/webhook', (req, res) => {
     let mode = req.query['hub.mode'];
     let token = req.query['hub.verify_token'];
     let challenge = req.query['hub.challenge'];
-
-    if (mode && token) {
-        if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-            res.status(200).send(challenge);
-        } else {
-            res.sendStatus(403);
-        }
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+        res.status(200).send(challenge);
+    } else {
+        res.sendStatus(403);
     }
 });
 
-// 3. INCOMING MESSAGES (POST)
 app.post('/webhook', async (req, res) => {
     let body = req.body;
-
-    // --- WHATSAPP LOGIC ---
+    
+    // 1. WhatsApp Logic
     if (body.object === 'whatsapp_business_account') {
-        res.status(200).send('EVENT_RECEIVED'); 
-        
+        res.status(200).send('EVENT_RECEIVED');
         if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
             let msg = body.entry[0].changes[0].value.messages[0];
+            let sender_phone = msg.from;
+            
             if (msg.type === 'text') {
-                //let replyText = `Received on WhatsApp: "${msg.text.body}"`;
-                let replyText = await askCompanyLLM(msg.text.body);
-                sendWhatsAppReply(msg.from, replyText);
-
-                // Log Received
-                messageLogs.unshift({ platform: 'WhatsApp', type: 'received', message: msg.text.body, time: new Date().toLocaleTimeString() });
-                // Log Sent
-                messageLogs.unshift({ platform: 'WhatsApp', type: 'sent', message: replyText, time: new Date().toLocaleTimeString() });                
+                let incoming_text = msg.text.body;
+                chatLogs.push({ userId: sender_phone, platform: 'WhatsApp', type: 'received', message: incoming_text, time: new Date().toLocaleTimeString() });
+                let ai_response = await askCompanyLLM(incoming_text);
+                await sendWhatsAppReply(sender_phone, ai_response);
             }
         }
     } 
-    // --- FACEBOOK AND INSTAGRAM LOGIC ---
+    // 2. Facebook and Instagram Logic
     else if (body.object === 'page' || body.object === 'instagram') {
         res.status(200).send('EVENT_RECEIVED'); 
-
         body.entry.forEach(async function(entry) {
             if (entry.messaging) {
                 let webhook_event = entry.messaging[0];
+                let sender_psid = webhook_event.sender.id;
+                let bot_id = webhook_event.recipient.id;
+                
                 if (webhook_event.message && webhook_event.message.is_echo) return;
 
                 if (webhook_event.message && webhook_event.message.text) {
-                    let platformName = body.object === 'page' ? 'Facebook' : 'Instagram';
-                    //let replyText = `Received on ${platformName}: "${webhook_event.message.text}"`;
-                    let replyText = await askCompanyLLM(webhook_event.message.text.body);
+                    let platform = body.object === 'page' ? 'Facebook' : 'Instagram';
+                    let incoming_text = webhook_event.message.text;
                     
-                    sendFbIgReply(webhook_event.sender.id, webhook_event.recipient.id, replyText);
-
-                    messageLogs.unshift({ platform: platformName, type: 'received', message: webhook_event.message.text, time: new Date().toLocaleTimeString() });   
-                    messageLogs.unshift({ platform: platformName, type: 'sent', message: replyText, time: new Date().toLocaleTimeString() });   
+                    chatLogs.push({ userId: sender_psid, platform: platform, type: 'received', message: incoming_text, time: new Date().toLocaleTimeString() });
+                    let ai_response = await askCompanyLLM(incoming_text);
+                    await sendFbIgReply(sender_psid, bot_id, ai_response, platform);
                 }
             }
         });
     }
-    // --- VIBER LOGIC (Infobip Sandbox) ---
+    // 3. Viber (Infobip Sandbox) Logic
     else if (body.results && body.results[0].integrationType === 'VIBER') {
         res.status(200).send('EVENT_RECEIVED'); 
         let msgData = body.results[0];
+        let sender_phone = msgData.from; 
         
         if (msgData.message && msgData.message.type === 'TEXT') {
-            let replyText = `Received on Viber: "${msgData.message.text}"`;
-            //let replyText = await askCompanyLLM(msg.text.body);
-            sendViberReply(msgData.from, replyText);
-
-            messageLogs.unshift({ platform: 'Viber', type: 'received', message: msgData.message.text, time: new Date().toLocaleTimeString() });               
-            messageLogs.unshift({ platform: 'Viber', type: 'sent', message: replyText, time: new Date().toLocaleTimeString() });               
+            let incoming_text = msgData.message.text;
+            chatLogs.push({ userId: sender_phone, platform: 'Viber', type: 'received', message: incoming_text, time: new Date().toLocaleTimeString() });
+            let ai_response = await askCompanyLLM(incoming_text);
+            await sendViberReply(sender_phone, ai_response);
         }
-    } else {
+    }
+    // Unknown Traffic
+    else {
         res.sendStatus(404);
     }
 });
 
-// 4. HELPER FUNCTIONS
-function sendFbIgReply(sender_psid, bot_id, responseText) {
-    axios.post(`https://graph.facebook.com/v20.0/${bot_id}/messages`, {
-        "recipient": { "id": sender_psid }, "messaging_type": "RESPONSE", "message": { "text": responseText }
-    }, { headers: { "Authorization": `Bearer ${PAGE_ACCESS_TOKEN}` } }).catch(err => console.error('FB/IG Error:', err.message));
-}
-function sendWhatsAppReply(sender_phone, responseText) {
-    axios.post(`https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_ID}/messages`, {
-        "messaging_product": "whatsapp", "to": sender_phone, "type": "text", "text": { "body": responseText }
-    }, { headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}` } }).catch(err => console.error('WhatsApp Error:', err.message));
-}
-function sendViberReply(sender_phone, responseText) {
-    axios.post(`https://${INFOBIP_BASE_URL}/viber/2/messages`, {
-        "messages": [{ "sender": "IBSelfServe", "destinations": [{"to": sender_phone}], "content": { "type": "TEXT", "text": responseText } }]
-    }, { headers: { "Authorization": `App ${VIBER_TOKEN}`, "Content-Type": "application/json", "Accept": "application/json" } }).catch(err => console.error('Viber Error:', err.message));
-}
-
-async function askCompanyLLM(user_message) {
-    try{
-        const url = `https://whatsappai.siyothsoft.com/echo-secure?kb=${encodeURIComponent(LLM_KB)}&message=${encodeURIComponent(user_message)}`;
-        // call llm api
-        const response = await axios.get(url, {
-            headers: { "Authorization": `Bearer ${LLM_ACCESS_TOKEN}`}
-        });
-        // return text that generated by llm
-        let raw_text = String(response.data);
-        // remove "data:" prefix from llm response
-        let clean_text = raw_text.replace(/^data:\s*/i, '');
-        // return text that generated by llm
-        return clean_text;
-    }
-    catch(error) {
-        console.error("LLM API error: ", error.message);
-        // fallback msg if llm crashes
-        return "Please try again in a moment";
-    }
-}
-
-// 5. SERVER ROUTES
-app.get('/api/logs', (req, res) => res.json(messageLogs.slice(0, 50)));
-app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/dashboard.html'));
-app.get('/style.css', (req, res) => res.sendFile(__dirname + '/style.css'));
-
-app.post('/api/logs/clear', (req, res) => {
-    messageLogs.length = 0; // Instantly empties the array
-    res.sendStatus(200);
-});
-
-app.listen(3001, () => console.log('Webhook listening on port 3001... \nOpen: http://localhost:3001/dashboard'));
+app.listen(3001, () => console.log('Webhook & Dashboard listening on port 3001...'));
