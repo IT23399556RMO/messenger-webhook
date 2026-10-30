@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Multi-Channel Hub</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="confirmbox.css">
 </head>
 <body>
     
@@ -12,20 +13,40 @@
     <div class="sidebar platform-sidebar">
         <h2>Platforms</h2>
         <div class="platform-tabs">
-            <div class="nav-tab active" onclick="setPlatformFilter('All')" id="all">All Channels</div>
-            <div class="nav-tab" onclick="setPlatformFilter('Facebook')" id="fb">Facebook</div>
-            <div class="nav-tab" onclick="setPlatformFilter('Instagram')" id="ig">Instagram</div>
-            <div class="nav-tab" onclick="setPlatformFilter('WhatsApp')" id="wa">WhatsApp</div>
-            <div class="nav-tab" onclick="setPlatformFilter('Viber')" id="vi">Viber</div>
+            <div class="nav-tab active" id="all">
+                <span class="tab-label" onclick="setPlatformFilter('All')" style="margin-left:44px;">All Channels</span>
+            </div>
+            <div class="nav-tab" id="fb">
+                <label class="switch">
+                    <input type="checkbox" id="toggle-Facebook" onchange="handleToggle(event, 'Facebook')">
+                    <span class="slider round"></span>
+                </label>
+                <span class="tab-label" onclick="setPlatformFilter('Facebook')">Facebook</span>
+            </div>
+            <div class="nav-tab" id="ig">
+                <label class="switch">
+                    <input type="checkbox" id="toggle-Instagram" onchange="handleToggle(event, 'Instagram')">
+                    <span class="slider round"></span>
+                </label>
+                <span class="tab-label" onclick="setPlatformFilter('Instagram')">Instagram</span>
+            </div>
+            <div class="nav-tab" id="wa">
+                <label class="switch">
+                    <input type="checkbox" id="toggle-WhatsApp" onchange="handleToggle(event, 'WhatsApp')">
+                    <span class="slider round"></span>
+                </label>
+                <span class="tab-label" onclick="setPlatformFilter('WhatsApp')">WhatsApp</span>
+            </div>
+            <div class="nav-tab" id="vi">
+                <span class="tab-label" onclick="setPlatformFilter('Viber')" style="margin-left:44px;">Viber</span>
+            </div>
         </div>
     </div>
 
     <!-- 2nd Column: Recent Chats List -->
     <div class="sidebar user-sidebar">
-        <h2 id="feed-title">Recent Chats</h2>
-        <div id="user-list" class="user-list">
-            <!-- User cards will inject here -->
-        </div>
+        <h2 id="feed-title">All Channels Chats</h2>
+        <div id="user-list" class="user-list"></div>
     </div>
 
     <!-- 3rd Column: Chat History Main Feed -->
@@ -34,10 +55,15 @@
         <div id="logs">
             <div style="color:#888; text-align:center; margin-top:50px;">Waiting for selection...</div>
         </div>
-        <button class="clear-btn" onclick="clearLogs()">Clear All Server Logs</button>
+        
+        <!-- Human Agent Input Area -->
+        <div class="chat-input-area">
+            <input type="text" id="agent-input" placeholder="Switch platform to Agent Mode to reply..." disabled>
+            <button id="send-btn" onclick="sendAgentMessage()" disabled>Send</button>
+        </div>
     </div>
 
-    <!-- Load separate JS file -->
+    <script src="confirmbox.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

@@ -5,7 +5,7 @@ const bodyParser = require('body-parser');
 
 const app = express();
 app.use(bodyParser.json());
-app.use(express.static('public')); // Serves the dashboard UI
+app.use(express.static('public'));
 
 // --- CREDENTIALS ---
 const LLM_KB = process.env.KB;
@@ -17,20 +17,50 @@ const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
 const VIBER_TOKEN = process.env.VIBER_TOKEN;
 const INFOBIP_BASE_URL = process.env.INFOBIP_BASE_URL;
 
-// Memory storage for the dashboard
-let chatLogs = []; 
+// Memory & Modes
+let chatLogs = [];
+let platformModes = { Facebook: 'llm', Instagram: 'llm', WhatsApp: 'llm', Viber: 'llm' };
 
 // ==========================================
-// DASHBOARD API ENDPOINTS
+// DASHBOARD & AGENT API ENDPOINTS
 // ==========================================
 app.get('/api/logs', (req, res) => res.json(chatLogs));
-app.post('/api/logs/clear', (req, res) => {
-    chatLogs = [];
+app.post('/api/logs/clear', (req, res) => { chatLogs = []; res.sendStatus(200); });
+
+app.get('/api/modes', (req, res) => res.json(platformModes));
+app.post('/api/modes', (req, res) => {
+    const { platform, mode } = req.body;
+    if (platformModes[platform]) platformModes[platform] = mode;
     res.sendStatus(200);
 });
 
+app.post('/api/send', async (req, res) => {
+    const { userId, platform, message } = req.body;
+    try {
+        if (platform === 'WhatsApp') {
+            await sendWhatsAppReply(userId, message);
+            chatLogs.push({ userId, platform, type: 'sent', message, time: new Date().toLocaleTimeString() });
+        }
+        else if (platform === 'Viber') {
+            await sendViberReply(userId, message);
+            chatLogs.push({ userId, platform, type: 'sent', message, time: new Date().toLocaleTimeString() });
+        }
+        else if (platform === 'Facebook' || platform === 'Instagram') {
+            // Retrieve exact botId to reply through correct page
+            const log = chatLogs.find(l => l.userId === userId && l.platform === platform && l.botId);
+            const botId = log ? log.botId : 'me';
+            await sendFbIgReply(userId, botId, message, platform);
+            chatLogs.push({ userId, botId, platform, type: 'sent', message, time: new Date().toLocaleTimeString() });
+        }
+        res.sendStatus(200);
+    } catch (err) {
+        console.error("Agent Send Error:", err.message);
+        res.sendStatus(500);
+    }
+});
+
 // ==========================================
-// THE LLM "CHEF" INTEGRATION
+// LLM INTEGRATION
 // ==========================================
 async function askCompanyLLM(user_message) {
     try {
@@ -38,61 +68,53 @@ async function askCompanyLLM(user_message) {
         const response = await axios.get(url, {
             headers: { "Authorization": `Bearer ${LLM_ACCESS_TOKEN}` }
         });
-        return String(response.data).replace(/^data:\s*/i, ''); 
+        return response.data;
     } catch (error) {
         console.error('LLM API Error:', error.message);
-        return "I'm having trouble connecting to the knowledge base."; 
+        return "I'm having trouble thinking right now, please try again in a moment.";
     }
 }
 
 // ==========================================
-// OUTBOUND MESSAGE DELIVERIES
+// PLATFORM SEND FUNCTIONS
 // ==========================================
-async function sendFbIgReply(sender_psid, bot_id, text, platform) {
-    chatLogs.push({ userId: sender_psid, platform: platform, type: 'sent', message: text, time: new Date().toLocaleTimeString() });
+async function sendWhatsAppReply(recipient, text) {
     try {
-        await axios.post(`https://graph.facebook.com/v20.0/${bot_id}/messages`, {
-            recipient: { id: sender_psid },
-            messaging_type: "RESPONSE",
-            message: { text: text }
-        }, { headers: { "Authorization": `Bearer ${PAGE_ACCESS_TOKEN}` } });
-    } catch (err) { console.error(`${platform} Error:`, err.message); }
+        await axios.post(
+            `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_ID}/messages`,
+            { messaging_product: "whatsapp", to: recipient, type: "text", text: { body: text } },
+            { headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}` } }
+        );
+    } catch (e) { console.error("WA Send Error:", e.response ? e.response.data : e.message); }
 }
 
-async function sendWhatsAppReply(sender_phone, text) {
-    chatLogs.push({ userId: sender_phone, platform: 'WhatsApp', type: 'sent', message: text, time: new Date().toLocaleTimeString() });
+async function sendFbIgReply(recipient, bot_id, text, platform) {
     try {
-        await axios.post(`https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_ID}/messages`, {
-            messaging_product: "whatsapp",
-            to: sender_phone,
-            type: "text",
-            text: { body: text }
-        }, { headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}` } });
-    } catch (err) { console.error('WhatsApp Error:', err.message); }
+        await axios.post(
+            `https://graph.facebook.com/v20.0/${bot_id}/messages`,
+            { recipient: { id: recipient }, message: { text: text } },
+            { headers: { "Authorization": `Bearer ${PAGE_ACCESS_TOKEN}` } }
+        );
+    } catch (e) { console.error(`${platform} Send Error:`, e.response ? e.response.data : e.message); }
 }
 
-async function sendViberReply(sender_phone, text) {
-    chatLogs.push({ userId: sender_phone, platform: 'Viber', type: 'sent', message: text, time: new Date().toLocaleTimeString() });
+async function sendViberReply(recipient, text) {
     try {
-        await axios.post(`https://${INFOBIP_BASE_URL}/viber/2/messages`, {
-            messages: [{
-                sender: "IBSelfServe", 
-                destinations: [{ to: sender_phone }],
-                content: { type: "TEXT", text: text }
-            }]
-        }, {
-            headers: { "Authorization": `App ${VIBER_TOKEN}`, "Content-Type": "application/json", "Accept": "application/json" }
-        });
-    } catch (err) { console.error('Viber Error:', err.message); }
+        await axios.post(
+            `${INFOBIP_BASE_URL}/viber/2/messages`,
+            { messages: [{ from: "ServiceBot", to: recipient, content: { type: "TEXT", text: text } }] },
+            { headers: { "Authorization": `App ${VIBER_TOKEN}`, "Content-Type": "application/json", "Accept": "application/json" } }
+        );
+    } catch (e) { console.error("Viber Send Error:", e.response ? e.response.data : e.message); }
 }
 
 // ==========================================
-// INBOUND WEBHOOK ROUTER
+// WEBHOOK VERIFICATION (GET)
 // ==========================================
 app.get('/webhook', (req, res) => {
-    let mode = req.query['hub.mode'];
-    let token = req.query['hub.verify_token'];
-    let challenge = req.query['hub.challenge'];
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
         res.status(200).send(challenge);
     } else {
@@ -100,25 +122,31 @@ app.get('/webhook', (req, res) => {
     }
 });
 
+// ==========================================
+// WEBHOOK INBOUND (POST)
+// ==========================================
 app.post('/webhook', async (req, res) => {
     let body = req.body;
-    
-    // 1. WhatsApp Logic
+
+    // --- WHATSAPP LOGIC ---
     if (body.object === 'whatsapp_business_account') {
         res.status(200).send('EVENT_RECEIVED');
         if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
             let msg = body.entry[0].changes[0].value.messages[0];
             let sender_phone = msg.from;
-            
             if (msg.type === 'text') {
                 let incoming_text = msg.text.body;
                 chatLogs.push({ userId: sender_phone, platform: 'WhatsApp', type: 'received', message: incoming_text, time: new Date().toLocaleTimeString() });
-                let ai_response = await askCompanyLLM(incoming_text);
-                await sendWhatsAppReply(sender_phone, ai_response);
+                
+                if (platformModes['WhatsApp'] === 'llm') {
+                    let ai_response = await askCompanyLLM(incoming_text);
+                    await sendWhatsAppReply(sender_phone, ai_response);
+                    chatLogs.push({ userId: sender_phone, platform: 'WhatsApp', type: 'sent', message: ai_response, time: new Date().toLocaleTimeString() });
+                }
             }
         }
     } 
-    // 2. Facebook and Instagram Logic
+    // --- FACEBOOK AND INSTAGRAM LOGIC ---
     else if (body.object === 'page' || body.object === 'instagram') {
         res.status(200).send('EVENT_RECEIVED'); 
         body.entry.forEach(async function(entry) {
@@ -128,35 +156,41 @@ app.post('/webhook', async (req, res) => {
                 let bot_id = webhook_event.recipient.id;
                 
                 if (webhook_event.message && webhook_event.message.is_echo) return;
-
+                
                 if (webhook_event.message && webhook_event.message.text) {
                     let platform = body.object === 'page' ? 'Facebook' : 'Instagram';
                     let incoming_text = webhook_event.message.text;
                     
-                    chatLogs.push({ userId: sender_psid, platform: platform, type: 'received', message: incoming_text, time: new Date().toLocaleTimeString() });
-                    let ai_response = await askCompanyLLM(incoming_text);
-                    await sendFbIgReply(sender_psid, bot_id, ai_response, platform);
+                    chatLogs.push({ userId: sender_psid, botId: bot_id, platform: platform, type: 'received', message: incoming_text, time: new Date().toLocaleTimeString() });
+                    
+                    if (platformModes[platform] === 'llm') {
+                        let ai_response = await askCompanyLLM(incoming_text);
+                        await sendFbIgReply(sender_psid, bot_id, ai_response, platform);
+                        chatLogs.push({ userId: sender_psid, botId: bot_id, platform: platform, type: 'sent', message: ai_response, time: new Date().toLocaleTimeString() });
+                    }
                 }
             }
         });
     }
-    // 3. Viber (Infobip Sandbox) Logic
-    else if (body.results && body.results[0].integrationType === 'VIBER') {
-        res.status(200).send('EVENT_RECEIVED'); 
-        let msgData = body.results[0];
-        let sender_phone = msgData.from; 
-        
-        if (msgData.message && msgData.message.type === 'TEXT') {
-            let incoming_text = msgData.message.text;
-            chatLogs.push({ userId: sender_phone, platform: 'Viber', type: 'received', message: incoming_text, time: new Date().toLocaleTimeString() });
-            let ai_response = await askCompanyLLM(incoming_text);
-            await sendViberReply(sender_phone, ai_response);
+    // --- INFOBIP VIBER LOGIC ---
+    else if (body.results && body.results[0] && body.results[0].integrationType === 'VIBER') {
+        res.status(200).send('EVENT_RECEIVED');
+        let msg = body.results[0];
+        let sender_id = msg.from;
+        if (msg.message && msg.message.type === 'TEXT') {
+            let incoming_text = msg.message.text;
+            chatLogs.push({ userId: sender_id, platform: 'Viber', type: 'received', message: incoming_text, time: new Date().toLocaleTimeString() });
+            
+            if (platformModes['Viber'] === 'llm') {
+                let ai_response = await askCompanyLLM(incoming_text);
+                await sendViberReply(sender_id, ai_response);
+                chatLogs.push({ userId: sender_id, platform: 'Viber', type: 'sent', message: ai_response, time: new Date().toLocaleTimeString() });
+            }
         }
-    }
-    // Unknown Traffic
-    else {
+    } else {
         res.sendStatus(404);
     }
 });
 
-app.listen(3001, () => console.log('Webhook & Dashboard listening on port 3001...'));
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
